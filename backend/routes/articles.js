@@ -4,46 +4,69 @@ const { authenticateToken } = require('../middleware/auth');
 
 const router = express.Router();
 
-// GET /api/articles - List articles with pagination, tag filter and search
-router.get('/', (req, res) => {
-  const db = getDb();
-  const page = parseInt(req.query.page) || 1;
-  const limit = parseInt(req.query.limit) || 10;
-  const tag = req.query.tag || null;
-  const search = req.query.search || null;
-  const offset = (page - 1) * limit;
+const MAX_PAGE_SIZE = 100;
+const TOP_TAGS_LIMIT = 10;
 
-  let countQuery, articlesQuery;
-  let params = [];
-  let countParams = [];
-  let whereClauses = [];
+// Build the shared WHERE clause and params from query filters.
+// Used by the list, count and stats queries so they always agree on
+// the same conditions (single source of truth for filtering).
+function buildArticleFilters(query) {
+  const whereClauses = [];
+  const params = [];
+
+  const tag = query.tag || null;
+  const search = query.search || null;
+  const from = query.from || null;
+  const to = query.to || null;
 
   if (tag) {
     whereClauses.push(`',' || tags || ',' LIKE ?`);
     params.push(`%,${tag},%`);
-    countParams.push(`%,${tag},%`);
   }
 
   if (search) {
     whereClauses.push(`(title LIKE ? OR summary LIKE ?)`);
     const searchTerm = `%${search}%`;
     params.push(searchTerm, searchTerm);
-    countParams.push(searchTerm, searchTerm);
+  }
+
+  if (from) {
+    whereClauses.push(`date(created_at) >= date(?)`);
+    params.push(from);
+  }
+
+  if (to) {
+    whereClauses.push(`date(created_at) <= date(?)`);
+    params.push(to);
   }
 
   const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+  return { whereSql, params };
+}
 
-  countQuery = `SELECT COUNT(*) as total FROM articles ${whereSql}`;
-  articlesQuery = `SELECT id, title, summary, tags, created_at, updated_at FROM articles ${whereSql} ORDER BY created_at DESC LIMIT ? OFFSET ?`;
-  params.push(limit, offset);
+function parseTags(tagsStr) {
+  return tagsStr ? tagsStr.split(',').map(t => t.trim()).filter(t => t.length > 0) : [];
+}
+
+// GET /api/articles - List articles with pagination, tag filter, search and date range
+router.get('/', (req, res) => {
+  const db = getDb();
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 10, 1), MAX_PAGE_SIZE);
+  const offset = (page - 1) * limit;
+
+  const { whereSql, params } = buildArticleFilters(req.query);
+
+  const countQuery = `SELECT COUNT(*) as total FROM articles ${whereSql}`;
+  const articlesQuery = `SELECT id, title, summary, tags, created_at, updated_at FROM articles ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`;
 
   try {
-    const { total } = db.prepare(countQuery).get(...countParams);
-    const articles = db.prepare(articlesQuery).all(...params);
+    const { total } = db.prepare(countQuery).get(...params);
+    const articles = db.prepare(articlesQuery).all(...params, limit, offset);
 
     const parsedArticles = articles.map(article => ({
       ...article,
-      tags: article.tags ? article.tags.split(',').map(t => t.trim()) : []
+      tags: parseTags(article.tags)
     }));
 
     res.json({
@@ -61,6 +84,59 @@ router.get('/', (req, res) => {
   }
 });
 
+// GET /api/articles/stats - Server-side aggregation over the same filters
+// (registered before /:id so "stats" is not treated as an article id)
+router.get('/stats', (req, res) => {
+  const db = getDb();
+  const { whereSql, params } = buildArticleFilters(req.query);
+
+  try {
+    const { total } = db.prepare(
+      `SELECT COUNT(*) as total FROM articles ${whereSql}`
+    ).get(...params);
+
+    // Trend summary: articles per day within the filtered set
+    const trend = db.prepare(
+      `SELECT date(created_at) as date, COUNT(*) as count FROM articles ${whereSql} GROUP BY date(created_at) ORDER BY date ASC`
+    ).all(...params);
+
+    // Articles created in the last 7 days, within the filtered set
+    const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString();
+    const recentWhere = whereSql
+      ? `${whereSql} AND created_at >= ?`
+      : `WHERE created_at >= ?`;
+    const { recent } = db.prepare(
+      `SELECT COUNT(*) as recent FROM articles ${recentWhere}`
+    ).get(...params, weekAgo);
+
+    // Tag distribution within the filtered set
+    const tagRows = db.prepare(
+      `SELECT tags FROM articles ${whereSql}`
+    ).all(...params);
+    const tagCounts = new Map();
+    tagRows.forEach(row => {
+      parseTags(row.tags).forEach(tag => {
+        tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
+      });
+    });
+    const topTags = Array.from(tagCounts.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+      .slice(0, TOP_TAGS_LIMIT);
+
+    res.json({
+      totalArticles: total,
+      totalTags: tagCounts.size,
+      recentArticles: recent,
+      trend,
+      topTags
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch article stats' });
+  }
+});
+
 // GET /api/articles/:id - Get single article
 router.get('/:id', (req, res) => {
   const db = getDb();
@@ -75,7 +151,7 @@ router.get('/:id', (req, res) => {
 
     res.json({
       ...article,
-      tags: article.tags ? article.tags.split(',').map(t => t.trim()) : []
+      tags: parseTags(article.tags)
     });
   } catch (err) {
     console.error(err);
@@ -105,7 +181,7 @@ router.post('/', authenticateToken, (req, res) => {
 
     res.status(201).json({
       ...article,
-      tags: article.tags ? article.tags.split(',').map(t => t.trim()) : []
+      tags: parseTags(article.tags)
     });
   } catch (err) {
     console.error(err);
@@ -141,7 +217,7 @@ router.put('/:id', authenticateToken, (req, res) => {
 
     res.json({
       ...article,
-      tags: article.tags ? article.tags.split(',').map(t => t.trim()) : []
+      tags: parseTags(article.tags)
     });
   } catch (err) {
     console.error(err);
@@ -173,7 +249,7 @@ function getTags(req, res) {
   const db = getDb();
 
   try {
-    const articles = db.prepare('SELECT tags FROM articles WHERE tags IS NOT NULL AND tags != ""').all();
+    const articles = db.prepare("SELECT tags FROM articles WHERE tags IS NOT NULL AND tags != ''").all();
     const tagSet = new Set();
 
     articles.forEach(article => {

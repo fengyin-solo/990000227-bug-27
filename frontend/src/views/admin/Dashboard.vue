@@ -106,20 +106,12 @@ onMounted(() => {
 
 async function fetchStats() {
   try {
-    const [articlesRes, tagsRes] = await Promise.all([
-      api.get('/articles', { params: { page: 1, limit: 1000 } }),
-      api.get('/tags')
-    ])
-    
-    stats.totalArticles = articlesRes.data.pagination.total
-    stats.totalTags = tagsRes.data.tags.length
-    
-    // Calculate articles from this week
-    const oneWeekAgo = new Date()
-    oneWeekAgo.setDate(oneWeekAgo.getDate() - 7)
-    stats.recentArticles = articlesRes.data.articles.filter(
-      a => new Date(a.created_at) > oneWeekAgo
-    ).length
+    // Aggregated on the server so the numbers stay accurate regardless
+    // of how many articles exist (no client-side paging tricks).
+    const response = await api.get('/articles/stats')
+    stats.totalArticles = response.data.totalArticles
+    stats.totalTags = response.data.totalTags
+    stats.recentArticles = response.data.recentArticles
   } catch (error) {
     console.error('Failed to fetch stats:', error)
   }

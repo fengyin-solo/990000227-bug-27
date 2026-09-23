@@ -112,7 +112,8 @@ The frontend will be available at `http://localhost:5173`
 | Method | Endpoint | Description | Auth Required |
 |--------|----------|-------------|---------------|
 | POST | `/api/auth/login` | Admin login | No |
-| GET | `/api/articles` | List articles (with pagination and tag filter) | No |
+| GET | `/api/articles` | List articles (pagination, tag/search/date-range filters) | No |
+| GET | `/api/articles/stats` | Aggregated stats (total, trend, top tags) with the same filters | No |
 | GET | `/api/articles/:id` | Get single article | No |
 | POST | `/api/articles` | Create new article | Yes |
 | PUT | `/api/articles/:id` | Update article | Yes |
