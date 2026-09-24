@@ -3,6 +3,7 @@ const cors = require('cors');
 const path = require('path');
 const initDb = require('./db/init');
 const articlesRouter = require('./routes/articles');
+const statsRouter = require('./routes/stats');
 const authRouter = require('./routes/auth');
 
 const app = express();
@@ -18,6 +19,7 @@ app.use(express.json());
 // Routes
 app.use('/api/auth', authRouter);
 app.use('/api/articles', articlesRouter);
+app.use('/api/stats', statsRouter);
 
 // Tags route
 const { getTags } = require('./routes/articles');

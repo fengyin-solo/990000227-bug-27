@@ -1,45 +1,42 @@
 const express = require('express');
 const { getDb } = require('../db/init');
 const { authenticateToken } = require('../middleware/auth');
+const {
+  buildArticleFilter,
+  whereSqlFrom,
+  parsePagination,
+  effectivePage
+} = require('./filters');
 
 const router = express.Router();
 
-// GET /api/articles - List articles with pagination, tag filter and search
+// GET /api/articles - List articles with pagination, tag filter, search and
+// optional date range (start_date / end_date). The list, count and the
+// /api/stats summary all share buildArticleFilter so they can never diverge.
 router.get('/', (req, res) => {
   const db = getDb();
-  const page = parseInt(req.query.page) || 1;
-  const limit = parseInt(req.query.limit) || 10;
-  const tag = req.query.tag || null;
-  const search = req.query.search || null;
-  const offset = (page - 1) * limit;
-
-  let countQuery, articlesQuery;
-  let params = [];
-  let countParams = [];
-  let whereClauses = [];
-
-  if (tag) {
-    whereClauses.push(`',' || tags || ',' LIKE ?`);
-    params.push(`%,${tag},%`);
-    countParams.push(`%,${tag},%`);
-  }
-
-  if (search) {
-    whereClauses.push(`(title LIKE ? OR summary LIKE ?)`);
-    const searchTerm = `%${search}%`;
-    params.push(searchTerm, searchTerm);
-    countParams.push(searchTerm, searchTerm);
-  }
-
-  const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
-
-  countQuery = `SELECT COUNT(*) as total FROM articles ${whereSql}`;
-  articlesQuery = `SELECT id, title, summary, tags, created_at, updated_at FROM articles ${whereSql} ORDER BY created_at DESC LIMIT ? OFFSET ?`;
-  params.push(limit, offset);
 
   try {
-    const { total } = db.prepare(countQuery).get(...countParams);
-    const articles = db.prepare(articlesQuery).all(...params);
+    const { page: requestedPage, limit } = parsePagination(req.query);
+    const { clauses, params: filterParams } = buildArticleFilter(req.query);
+    const whereSql = whereSqlFrom(clauses);
+
+    const countQuery = `SELECT COUNT(*) as total FROM articles ${whereSql}`;
+    const { total } = db.prepare(countQuery).get(...filterParams);
+
+    const totalPages = Math.ceil(total / limit);
+    const page = effectivePage(requestedPage, totalPages);
+    const offset = (page - 1) * limit;
+
+    const articlesQuery = `
+      SELECT id, title, summary, tags, created_at, updated_at
+      FROM articles ${whereSql}
+      ORDER BY datetime(created_at) DESC, id DESC
+      LIMIT ? OFFSET ?
+    `;
+    const articles = db
+      .prepare(articlesQuery)
+      .all(...filterParams, limit, offset);
 
     const parsedArticles = articles.map(article => ({
       ...article,
@@ -51,13 +48,16 @@ router.get('/', (req, res) => {
       pagination: {
         total,
         page,
+        requestedPage,
         limit,
-        totalPages: Math.ceil(total / limit)
+        totalPages
       }
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Failed to fetch articles' });
+    const status = err.status || 500;
+    const error = err.status ? err.message : 'Failed to fetch articles';
+    res.status(status).json({ error });
   }
 });
 
@@ -173,7 +173,7 @@ function getTags(req, res) {
   const db = getDb();
 
   try {
-    const articles = db.prepare('SELECT tags FROM articles WHERE tags IS NOT NULL AND tags != ""').all();
+    const articles = db.prepare("SELECT tags FROM articles WHERE tags IS NOT NULL AND tags != ''").all();
     const tagSet = new Set();
 
     articles.forEach(article => {

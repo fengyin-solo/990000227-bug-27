@@ -112,12 +112,30 @@ The frontend will be available at `http://localhost:5173`
 | Method | Endpoint | Description | Auth Required |
 |--------|----------|-------------|---------------|
 | POST | `/api/auth/login` | Admin login | No |
-| GET | `/api/articles` | List articles (with pagination and tag filter) | No |
+| GET | `/api/articles` | List articles (pagination, tag, search, `start_date`/`end_date` range) | No |
 | GET | `/api/articles/:id` | Get single article | No |
 | POST | `/api/articles` | Create new article | Yes |
 | PUT | `/api/articles/:id` | Update article | Yes |
 | DELETE | `/api/articles/:id` | Delete article | Yes |
 | GET | `/api/tags` | Get all unique tags | No |
+| GET | `/api/stats` | Aggregated dashboard summary (same filters plus pagination) | No |
+
+### Query parameters
+
+`GET /api/articles` and `GET /api/stats` share one set of filter parameters,
+so the list and every dashboard number are always computed under the same
+conditions:
+
+- `page`, `limit` — pagination (`limit` is capped at 100; pages past the last
+  one are clamped and reported back as `pagination.requestedPage`)
+- `tag` — exact tag match
+- `search` — match title or summary
+- `start_date`, `end_date` — inclusive `created_at` range, accepts
+  `YYYY-MM-DD` (the end day is included fully) or an ISO-8601 timestamp
+
+`GET /api/stats` returns the totals, range article count, trailing-7-day
+count, previous-period trend, per-day counts, popular tags and the
+corresponding paginated article list in a single response.
 
 ## Admin Credentials
 

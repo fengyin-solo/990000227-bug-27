@@ -33,6 +33,9 @@
             </el-button>
           </template>
         </el-table-column>
+        <template #empty>
+          暂无文章
+        </template>
       </el-table>
       
       <Pagination
@@ -64,23 +67,37 @@ const pagination = ref({
   totalPages: 0
 })
 
+// Ignore responses from requests that were superseded (e.g. fast paging).
+let latestRequestId = 0
+
 onMounted(() => {
   fetchArticles()
 })
 
 async function fetchArticles() {
+  const requestId = ++latestRequestId
   loading.value = true
   try {
     const response = await api.get('/articles', {
       params: { page: currentPage.value, limit: pagination.value.limit }
     })
+    if (requestId !== latestRequestId) return
+
     articles.value = response.data.articles
     pagination.value = response.data.pagination
+
+    // The server clamps pages past the last one (e.g. after deleting the
+    // final article on the last page) and returns that page's rows in the
+    // same response; just realign the pager with what was returned.
+    if (response.data.pagination.page !== currentPage.value) {
+      currentPage.value = response.data.pagination.page
+    }
   } catch (error) {
+    if (requestId !== latestRequestId) return
     console.error('Failed to fetch articles:', error)
     ElMessage.error('获取文章列表失败')
   } finally {
-    loading.value = false
+    if (requestId === latestRequestId) loading.value = false
   }
 }
 
